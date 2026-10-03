@@ -56,6 +56,9 @@ if uploaded_file is not None:
     if st.button("Jalankan Prediksi 12 Bulan Ke Depan"):
         with st.spinner('Algoritma ARIMA sedang menghitung proyeksi...'):
             ts_data = data_barang.set_index('Bulan')['Quantity']
+
+            # Mengisi bulan yang kosong dengan 0 & mengunci frekuensi bulanan (Month Start)
+            ts_data = ts_data.resample('MS').sum().fillna(0)
             
             # Membangun Model ARIMA
             model = ARIMA(ts_data, order=(1, 1, 1))
