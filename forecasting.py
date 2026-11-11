@@ -4,86 +4,92 @@ import matplotlib.pyplot as plt
 from statsmodels.tsa.arima.model import ARIMA
 import warnings
 
-# Mengabaikan peringatan sistem
-warnings.filterwarnings("ignore")
+warnings.filterwarnings('ignore')
 
 st.title("Sistem Demand Forecasting Persediaan")
 st.write("PT Samudra Utama Narapati - Oleh: Sri Devi")
-st.markdown("---")
 
-# FITUR BARU: CACHE DATA AGAR WEB SANGAT CEPAT (TIDAK LOADING ULANG SAAT GANTI BARANG)
+# 1. IMPLEMENTASI CACHE MEMORI (Solusi untuk mengatasi web lambat / lagging)
 @st.cache_data
 def load_and_clean_data(file):
+    # Baca file Excel atau CSV
     if file.name.endswith('.csv'):
         df = pd.read_csv(file)
     else:
         df = pd.read_excel(file)
     
-    df = df.dropna(subset=['Item Description', 'Invoice Date'])
+    # 2. VALIDASI KOLOM (Skenario Uji Black-Box: Menolak file yang salah format)
+    required_cols = ['Invoice Date', 'Item Description', 'Quantity']
+    if not all(col in df.columns for col in required_cols):
+        return None, "Gagal: Format data tidak sesuai. Pastikan file memiliki kolom 'Invoice Date', 'Item Description', dan 'Quantity'."
+    
+    # Pembersihan Data Lanjutan (Drop nilai kosong)
+    df = df.dropna(subset=['Invoice Date', 'Item Description', 'Quantity'])
     df['Invoice Date'] = pd.to_datetime(df['Invoice Date'], errors='coerce')
     df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce')
+    df = df.dropna(subset=['Invoice Date', 'Quantity'])
     
-    df['Bulan'] = df['Invoice Date'].dt.to_period('M')
-    df_bulanan = df.groupby(['Item Description', 'Bulan'])['Quantity'].sum().reset_index()
-    df_bulanan['Bulan'] = df_bulanan['Bulan'].dt.to_timestamp()
-    
-    return df_bulanan
+    return df, "Data berhasil dibaca dan siap dianalisis!"
 
-# 1. Fitur Upload File
-uploaded_file = st.file_uploader("Unggah file Penjualan (Excel/CSV)", type=["xls", "xlsx", "csv"])
+# Komponen Unggah File
+uploaded_file = st.file_uploader("Unggah file Penjualan (Excel/CSV)", type=["xlsx", "xls", "csv"])
 
 if uploaded_file is not None:
-    with st.spinner('Memproses data... (Hanya butuh waktu di awal)'):
-        # Memanggil fungsi cache di atas
-        df_bulanan = load_and_clean_data(uploaded_file)
-
-    st.success("Data berhasil dibaca dan siap dianalisis!")
-
-    # 2. Interaksi User: Pilih Barang
-    daftar_barang = df_bulanan['Item Description'].unique()
-    barang_dipilih = st.selectbox("Pilih Barang untuk Diproyeksikan:", daftar_barang)
-
-    # Filter data sesuai barang yang dipilih secara dinamis
-    data_barang = df_bulanan[df_bulanan['Item Description'] == barang_dipilih].sort_values('Bulan')
+    df, message = load_and_clean_data(uploaded_file)
     
-    # Menampilkan grafik historis (Menggunakan f-string agar nama berubah otomatis)
-    st.subheader(f"Tren Historis: {barang_dipilih}")
-    
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(data_barang['Bulan'], data_barang['Quantity'], marker='o', linestyle='-', color='blue', label='Data Aktual')
-    ax.grid(True, linestyle='--', alpha=0.6)
-    ax.legend()
-    st.pyplot(fig)
-
-    # 3. Tombol Eksekusi Prediksi ARIMA
-    st.markdown("---")
-    if st.button("Jalankan Prediksi 12 Bulan Ke Depan"):
-        with st.spinner('Algoritma ARIMA sedang menghitung proyeksi...'):
-            ts_data = data_barang.set_index('Bulan')['Quantity']
+    if df is None:
+        st.error(message) # Menampilkan pesan error jika kolom salah
+    else:
+        st.success(message)
+        
+        # Komponen Pilihan Produk (Dropdown)
+        produk_list = df['Item Description'].unique()
+        produk_pilihan = st.selectbox("Pilih Barang untuk Diproyeksikan:", produk_list)
+        
+        if produk_pilihan:
+            # Filter data sesuai produk yang dipilih
+            df_produk = df[df['Item Description'] == produk_pilihan]
             
-            # Memastikan urutan waktu tidak bolong
-            ts_data = ts_data.resample('MS').sum().fillna(0)
+            # 3. PENANGANAN BULAN KOSONG / RESAMPLING (Solusi ValueError ARIMA)
+            # Dikelompokkan per awal bulan (Month Start) dan diisi 0 jika tidak ada penjualan
+            ts_data = df_produk.set_index('Invoice Date')['Quantity'].resample('MS').sum().fillna(0)
             
-            # Membangun Model ARIMA
-            model = ARIMA(ts_data, order=(1, 1, 1))
-            model_fit = model.fit()
+            # Menampilkan Grafik Tren Historis
+            st.subheader(f"Tren Historis: {produk_pilihan}")
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(ts_data.index, ts_data.values, marker='o', label='Data Aktual', color='blue')
+            ax.grid(True, linestyle='--', alpha=0.6)
+            ax.legend()
+            st.pyplot(fig)
             
-            # Melakukan peramalan 12 langkah
-            forecast = model_fit.forecast(steps=12)
-            forecast_index = pd.date_range(start=ts_data.index[-1] + pd.DateOffset(months=1), periods=12, freq='MS')
-            forecast.index = forecast_index
-
-            # Menampilkan Grafik Gabungan
-            st.subheader(f"Hasil Peramalan Stok: {barang_dipilih} (Sep 2026 - Ags 2027)")
-            fig2, ax2 = plt.subplots(figsize=(10, 4))
-            ax2.plot(ts_data.index, ts_data.values, marker='o', linestyle='-', color='blue', label='Data Aktual')
-            ax2.plot(forecast.index, forecast.values, marker='o', linestyle='--', color='red', label='Hasil Prediksi')
-            
-            ax2.grid(True, linestyle='--', alpha=0.6)
-            ax2.legend()
-            st.pyplot(fig2)
-
-            # Menampilkan tabel hasil
-            st.write("**Rincian Angka Proyeksi:**")
-            df_forecast = pd.DataFrame({'Bulan': forecast.index.strftime('%B %Y'), 'Prediksi Kebutuhan (Quantity)': forecast.values.round()})
-            st.dataframe(df_forecast, use_container_width=True)
+            # Tombol Eksekusi Prediksi
+            if st.button("Jalankan Prediksi 12 Bulan Ke Depan"):
+                try:
+                    # 4. PEMODELAN ARIMA(1,1,1)
+                    model = ARIMA(ts_data, order=(1, 1, 1))
+                    model_fit = model.fit()
+                    
+                    # Melakukan peramalan 12 langkah (bulan) ke depan
+                    forecast = model_fit.forecast(steps=12)
+                    
+                    # Menampilkan Grafik Proyeksi (Gabungan)
+                    st.subheader(f"Hasil Peramalan Stok: {produk_pilihan} (12 Bulan Kedepan)")
+                    fig2, ax2 = plt.subplots(figsize=(10, 4))
+                    ax2.plot(ts_data.index, ts_data.values, marker='o', label='Data Aktual', color='blue')
+                    ax2.plot(forecast.index, forecast.values, marker='o', linestyle='--', label='Hasil Prediksi', color='red')
+                    ax2.grid(True, linestyle='--', alpha=0.6)
+                    ax2.legend()
+                    st.pyplot(fig2)
+                    
+                    # Menampilkan Tabel Rincian Angka Prediksi
+                    st.write("Rincian Angka Proyeksi:")
+                    forecast_df = forecast.reset_index()
+                    forecast_df.columns = ['Bulan', 'Prediksi Kebutuhan (Quantity)']
+                    forecast_df['Bulan'] = forecast_df['Bulan'].dt.strftime('%B %Y')
+                    # Membulatkan angka kuantitas agar tidak ada nilai desimal (karena barang fisik)
+                    forecast_df['Prediksi Kebutuhan (Quantity)'] = forecast_df['Prediksi Kebutuhan (Quantity)'].round().astype(int)
+                    
+                    st.dataframe(forecast_df, use_container_width=True)
+                    
+                except Exception as e:
+                    st.error(f"Terjadi kesalahan saat memproses ARIMA pada produk ini: {e}")
